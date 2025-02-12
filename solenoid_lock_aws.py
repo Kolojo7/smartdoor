@@ -1,6 +1,7 @@
 import RPi.GPIO as GPIO
 import time
 import boto3
+import json
 from datetime import datetime
 
 # GPIO Pin where the relay IN is connected
@@ -10,17 +11,20 @@ RELAY_PIN = 17
 S3_BUCKET_NAME = "doorinfo"
 s3_client = boto3.client("s3")
 
-def upload_log_to_s3(action):
-    """Uploads a log entry to the S3 bucket when the lock opens or closes."""
+def upload_log_to_s3(action, lock_status):
+    """
+    Uploads a log entry to the S3 bucket and updates a JSON file with lock status.
+    """
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     log_message = f"{timestamp} - {action}\n"
 
-    # Define file name and content
-    file_name = "door_log.txt"
+    # Define file names
+    log_file_name = "door_log.txt"
+    json_file_name = "door_status.json"
 
     try:
-        # Get existing log file from S3
-        response = s3_client.get_object(Bucket=S3_BUCKET_NAME, Key=file_name)
+        # Get existing log file from S3 (if it exists)
+        response = s3_client.get_object(Bucket=S3_BUCKET_NAME, Key=log_file_name)
         existing_logs = response["Body"].read().decode("utf-8")
     except s3_client.exceptions.NoSuchKey:
         existing_logs = ""
@@ -29,8 +33,18 @@ def upload_log_to_s3(action):
     updated_logs = existing_logs + log_message
 
     # Upload the updated log file
-    s3_client.put_object(Body=updated_logs.encode("utf-8"), Bucket=S3_BUCKET_NAME, Key=file_name)
+    s3_client.put_object(Body=updated_logs.encode("utf-8"), Bucket=S3_BUCKET_NAME, Key=log_file_name)
     print(f"Log uploaded to S3: {log_message.strip()}")
+
+    # Create JSON file with the latest lock status
+    lock_data = {
+        "timestamp": timestamp,
+        "lock_status": lock_status  # True = Locked, False = Unlocked
+    }
+
+    # Upload JSON file to S3
+    s3_client.put_object(Body=json.dumps(lock_data), Bucket=S3_BUCKET_NAME, Key=json_file_name)
+    print(f"Lock status updated in S3: {lock_data}")
 
 # GPIO Setup
 GPIO.setmode(GPIO.BCM)  # Use BCM numbering
@@ -41,13 +55,13 @@ try:
         # Turn the solenoid lock ON
         GPIO.output(RELAY_PIN, GPIO.HIGH)
         print("Lock ON")
-        upload_log_to_s3("Lock ON")  # Send signal to S3
+        upload_log_to_s3("Lock ON", True)  # Send signal with True (locked)
         time.sleep(5)  # Keep the lock ON for 5 seconds
 
         # Turn the solenoid lock OFF
         GPIO.output(RELAY_PIN, GPIO.LOW)
         print("Lock OFF")
-        upload_log_to_s3("Lock OFF")  # Send signal to S3
+        upload_log_to_s3("Lock OFF", False)  # Send signal with False (unlocked)
         time.sleep(5)  # Keep the lock OFF for 5 seconds
 
 except KeyboardInterrupt:
