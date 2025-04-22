@@ -12,7 +12,7 @@ from datetime import datetime
 # from gpiozero import LED
 import mediapipe as mp
 
-def face_recognition():
+def face_rec():
     # ------------------ Configuration ------------------
     CSV_LOG = "access_log.csv"
     CONFIRM_TIME = 3
