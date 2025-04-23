@@ -1,15 +1,18 @@
 import RPi.GPIO as GPIO
+import threading
 import time
 
-#GPIO
+GPIO.setmode(GPIO.BCM)
 PIR_PIN = 22
 GPIO.setup(PIR_PIN, GPIO.IN)
 
-#Global var call
-motionStatus = False
+motionStatus = False  # This gets updated continuously
 
-def watch_motion():
+def _watch_motion():
     global motionStatus
-    motionStatus = GPIO.input(PIR_PIN)
-    if motionStatus:
-        print(f"Motion detected!")
+    while True:
+        motionStatus = GPIO.input(PIR_PIN)
+        time.sleep(0.1)
+
+_thread = threading.Thread(target=_watch_motion, daemon=True)
+_thread.start()
