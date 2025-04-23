@@ -2,6 +2,7 @@
 from smartdoor import setup_gpio, open_lock, close_lock, start_flashlight, stop_flashlight, neo
 from aws_sync import fetch_override_status, upload_log_and_status
 from face_rec_aws import face_rec
+from motionSensor import motionStatus
 import time
 import RPi.GPIO as GPIO
 import json
