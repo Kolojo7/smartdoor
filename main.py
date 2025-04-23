@@ -33,6 +33,9 @@ def main():
     first_run = True
     start_flashlight()  # Start once and leave running
 
+    if motionStatus:
+        print("[MOTION] Movement detected.")
+
     try:
         while True:
             override = fetch_override_status()
