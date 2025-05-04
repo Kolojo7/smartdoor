@@ -4,6 +4,8 @@ from aws_sync import fetch_override_status, upload_log_and_status
 from face_rec_aws import face_rec
 from motionSensor import motionStatus
 from awsStream import setup_gpio, start_stream
+from eventRecord import start_recording
+import threading
 import time
 import RPi.GPIO as GPIO
 import json
@@ -36,6 +38,7 @@ def main():
 
     if motionStatus:
         print("[MOTION] Movement detected.")
+        threading.Thread(target=start_recording, args=(10,), daemon=True).start()
 
     try:
         while True:
