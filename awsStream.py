@@ -1,47 +1,84 @@
 import asyncio
 import cv2
+import aiohttp
+import json
+import pyaudio
 import numpy as np
+import RPi.GPIO as GPIO
+from av import AudioFrame, VideoFrame
 from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
-from aiortc.contrib.signaling import TcpSocketSignaling
-from aiortc.contrib.media import MediaBlackhole, MediaPlayer, MediaRecorder
-import subprocess
 
-class VideoStreamTrack(MediaStreamTrack):
+SIGNALING_SERVER = "http://54.151.64.7:8080"
+BUTTON_GPIO_PIN = 17  # Adjust as needed
+
+# --- Setup GPIO ---
+def setup_gpio():
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setup(BUTTON_GPIO_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+# --- Video Stream Track ---
+class PiVideoStream(MediaStreamTrack):
     kind = "video"
-
     def __init__(self):
         super().__init__()
-        self.cap = cv2.VideoCapture(0)  # USB cam; use 0 or 1 depending on Pi camera setup
+        self.cap = cv2.VideoCapture(0)
 
     async def recv(self):
         pts, time_base = await self.next_timestamp()
         ret, frame = self.cap.read()
         if not ret:
-            raise Exception("Camera capture failed.")
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        return VideoFrame.from_ndarray(frame_rgb, format="rgb24").rebuild(pts=pts, time_base=time_base)
+            return
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        video_frame = VideoFrame.from_ndarray(frame, format="rgb24")
+        video_frame.pts = pts
+        video_frame.time_base = time_base
+        return video_frame
 
-def start_webrtc_stream():
-    signaling = TcpSocketSignaling("your-aws-signaling-server.com", 1234)  #Server address to be set
+# --- Audio Stream Track with Push-to-Talk ---
+class PushToTalkAudio(MediaStreamTrack):
+    kind = "audio"
+    def __init__(self):
+        super().__init__()
+        self.p = pyaudio.PyAudio()
+        self.stream = self.p.open(format=pyaudio.paInt16, channels=1, rate=16000, input=True, frames_per_buffer=320)
+
+    async def recv(self):
+        pts, time_base = await self.next_timestamp()
+        if GPIO.input(BUTTON_GPIO_PIN) == GPIO.LOW:  # Button pressed
+            audio_data = self.stream.read(320, exception_on_overflow=False)
+        else:
+            audio_data = (np.zeros(320, dtype=np.int16)).tobytes()
+
+        frame = AudioFrame.from_ndarray(np.frombuffer(audio_data, dtype=np.int16), layout="mono", format="s16")
+        frame.pts = pts
+        frame.time_base = time_base
+        return frame
+
+# --- Start Stream ---
+async def start_stream():
     pc = RTCPeerConnection()
+    pc.addTrack(PiVideoStream())
+    pc.addTrack(PushToTalkAudio())
 
-    #Video stream
-    pc.addTrack(VideoStreamTrack())
+    offer = await pc.createOffer()
+    await pc.setLocalDescription(offer)
 
-    #Audio stream
-    audio_cmd = ["arecord", "-f", "cd", "-t", "raw"]
-    audio_process = subprocess.Popen(audio_cmd, stdout=subprocess.PIPE)
-    audio_player = MediaPlayer(audio_process.stdout, format="s16le", channels=1, rate=44100)
-    pc.addTrack(audio_player.audio)
+    async with aiohttp.ClientSession() as session:
+        await session.post(f"{SIGNALING_SERVER}/offer", json={
+            "sdp": pc.localDescription.sdp,
+            "type": pc.localDescription.type
+        })
 
-    async def run():
-        await signaling.connect()
-        offer = await signaling.receive()
-        await pc.setRemoteDescription(offer)
-        answer = await pc.createAnswer()
-        await pc.setLocalDescription(answer)
-        await signaling.send(pc.localDescription)
+        while True:
+            async with session.get(f"{SIGNALING_SERVER}/answer") as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if "sdp" in data:
+                        answer = RTCSessionDescription(sdp=data["sdp"], type=data["type"])
+                        await pc.setRemoteDescription(answer)
+                        print("✅ WebRTC connection established!")
+                        break
+            await asyncio.sleep(1)
 
-        await pc.waitClosed()
-
-    asyncio.run(run())
+    while True:
+        await asyncio.sleep(1)
