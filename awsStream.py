@@ -1,3 +1,4 @@
+# --- awsStream.py ---
 import asyncio
 import cv2
 import aiohttp
@@ -8,33 +9,46 @@ import RPi.GPIO as GPIO
 from av import AudioFrame, VideoFrame
 from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
 
-SIGNALING_SERVER = "http://54.151.64.7:8080"
+SIGNALING_SERVER = "http://54.151.64.7:8000"
 BUTTON_GPIO_PIN = 17  # Adjust as needed
 
-# --- Setup GPIO ---
-def setup_gpio():
+stream_instance = None  # Global reference to the stream
+
+def setup_stream_gpio():
     GPIO.setmode(GPIO.BCM)
     GPIO.setup(BUTTON_GPIO_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
-# --- Video Stream Track ---
 class PiVideoStream(MediaStreamTrack):
     kind = "video"
     def __init__(self):
         super().__init__()
         self.cap = cv2.VideoCapture(0)
+        self.paused = False
+
+    def pause(self):
+        self.paused = True
+        self.cap.release()  # 🔥 releases the lock on the camera
+
+    def resume(self):
+       self.cap = cv2.VideoCapture(0)  # 🔁 reacquire camera
+       self.paused = False
+
 
     async def recv(self):
+        if self.paused:
+            await asyncio.sleep(0.04)
+            return None
+
         pts, time_base = await self.next_timestamp()
         ret, frame = self.cap.read()
         if not ret:
-            return
+            return None
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         video_frame = VideoFrame.from_ndarray(frame, format="rgb24")
         video_frame.pts = pts
         video_frame.time_base = time_base
         return video_frame
 
-# --- Audio Stream Track with Push-to-Talk ---
 class PushToTalkAudio(MediaStreamTrack):
     kind = "audio"
     def __init__(self):
@@ -44,7 +58,7 @@ class PushToTalkAudio(MediaStreamTrack):
 
     async def recv(self):
         pts, time_base = await self.next_timestamp()
-        if GPIO.input(BUTTON_GPIO_PIN) == GPIO.LOW:  # Button pressed
+        if GPIO.input(BUTTON_GPIO_PIN) == GPIO.LOW:
             audio_data = self.stream.read(320, exception_on_overflow=False)
         else:
             audio_data = (np.zeros(320, dtype=np.int16)).tobytes()
@@ -54,10 +68,12 @@ class PushToTalkAudio(MediaStreamTrack):
         frame.time_base = time_base
         return frame
 
-# --- Start Stream ---
 async def start_stream():
+    global stream_instance
+    stream_instance = PiVideoStream()
+
     pc = RTCPeerConnection()
-    pc.addTrack(PiVideoStream())
+    pc.addTrack(stream_instance)
     pc.addTrack(PushToTalkAudio())
 
     offer = await pc.createOffer()
