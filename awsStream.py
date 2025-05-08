@@ -1,25 +1,3 @@
-
-# --- Shared RealSense Pipeline ---
-pipeline = None
-
-def get_shared_pipeline():
-    global pipeline
-    if pipeline is None:
-        pipeline = get_shared_pipeline()
-        config = rs.config()
-        config.enable_stream(rs.stream.color, 1280, 800, rs.format.bgr8, 30)
-        config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
-        # Start handled by get_shared_pipeline()
-        print("[INFO] Shared RealSense pipeline started.")
-    return pipeline
-
-def stop_shared_pipeline():
-    global pipeline
-    if pipeline:
-        stop_shared_pipeline()
-        print("[INFO] Shared RealSense pipeline stopped.")
-        pipeline = None
-
 import asyncio
 import threading
 import time
@@ -119,17 +97,17 @@ class RealSenseVideoTrack(VideoStreamTrack):
 
     def start_pipeline(self):
         with streaming_lock:
-            self.pipeline = get_shared_pipeline()
+            self.pipeline = rs.pipeline()
             config = rs.config()
             config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
-            self.# Start handled by get_shared_pipeline()
+            self.pipeline.start(config)
             print("[RealSense] Camera pipeline started.")
 
     def stop(self):
         self.keep_recording = False
         with streaming_lock:
             if self.pipeline:
-                self.stop_shared_pipeline()
+                self.pipeline.stop()
                 self.pipeline = None
                 print("[RealSense] Camera pipeline stopped.")
 
@@ -299,4 +277,3 @@ def stop_streaming():
 
 # --- Startup tasks ---
 start_audio_polling_thread()
-

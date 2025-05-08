@@ -23,4 +23,3 @@ def setup_motion_sensor():
 def get_motion_status():
     with lock:
         return motionStatus
-

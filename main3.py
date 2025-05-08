@@ -7,9 +7,37 @@ import time
 import RPi.GPIO as GPIO
 import json
 import os
+import threading
 
 LAST_OVERRIDE_FILE = "/home/pi/smartdoor/last_override.json"
 
+# --- Reboot Button Watchdog Thread ---
+def start_button_watchdog():
+    BUTTON_PIN = 27
+    HOLD_TIME = 5  # seconds
+
+    # GPIO is already set in setup_gpio() to PUD_DOWN
+
+    def watchdog_loop():
+        print("[BUTTON] Reboot watchdog running...")
+        try:
+            while True:
+                if GPIO.input(BUTTON_PIN) == GPIO.HIGH:  # ← Button pressed (HIGH)
+                    press_start = time.time()
+                    print("[BUTTON] Detected press.")
+                    while GPIO.input(BUTTON_PIN) == GPIO.HIGH:
+                        time.sleep(0.1)
+                        if time.time() - press_start >= HOLD_TIME:
+                            print("[BUTTON] Reboot triggered!")
+                            os.sync()
+                            os.system("sudo /sbin/reboot -f &")
+                            return
+                time.sleep(0.1)
+        except Exception as e:
+            print(f"[BUTTON] Error: {e}")
+    threading.Thread(target=watchdog_loop, daemon=True).start()
+
+# --- Helpers for manual override ---
 def load_last_override():
     if os.path.exists(LAST_OVERRIDE_FILE):
         try:
@@ -27,15 +55,16 @@ def save_last_override(value):
     except Exception as e:
         print(f"[WARN] Could not save last_override file: {e}")
 
+# --- Main entrypoint ---
 def main():
-    setup_gpio()
-    setup_motion_sensor()  # ✅ Start background thread to monitor PIR motion
+    setup_gpio()                # ✅ Set GPIO mode and input pins
+    start_button_watchdog()     # ✅ Start reboot thread after GPIO is ready
+    setup_motion_sensor()       # ✅ Start PIR motion monitoring
     last_override = load_last_override()
     first_run = True
-    start_flashlight()
+    start_flashlight()          # ✅ Start ambient light LED controller
 
-    # ✅ Start the streaming thread, pass motion detection function
-    start_streaming_thread(get_motion_status)
+    start_streaming_thread(get_motion_status)  # ✅ Begin RealSense stream + event recorder
 
     try:
         while True:
