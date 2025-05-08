@@ -111,6 +111,7 @@ def face_rec():
 
     confirm_start = None
     face_ready = False
+    no_face_start = None
 
     try:
         while True:
@@ -127,6 +128,7 @@ def face_rec():
             display = frame.copy()
 
             if result.multi_face_landmarks:
+                no_face_start = None  # reset timeout
                 lm = result.multi_face_landmarks[0].landmark
                 h, w, _ = frame.shape
                 if is_real_face(depth_frame, lm, w, h):
@@ -138,6 +140,11 @@ def face_rec():
                     confirm_start = None
             else:
                 confirm_start = None
+                if no_face_start is None:
+                    no_face_start = time.time()
+                elif time.time() - no_face_start >= 3:
+                    print("[ERROR] No face detected for 3 seconds. Exiting.")
+                    return False
 
             if face_ready:
                 print("[INFO] ✅ Real face confirmed, capturing new frame...")
