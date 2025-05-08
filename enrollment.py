@@ -1,3 +1,25 @@
+
+# --- Shared RealSense Pipeline ---
+pipeline = None
+
+def get_shared_pipeline():
+    global pipeline
+    if pipeline is None:
+        pipeline = get_shared_pipeline()
+        config = rs.config()
+        config.enable_stream(rs.stream.color, 1280, 800, rs.format.bgr8, 30)
+        config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+        # Start handled by get_shared_pipeline()
+        print("[INFO] Shared RealSense pipeline started.")
+    return pipeline
+
+def stop_shared_pipeline():
+    global pipeline
+    if pipeline:
+        stop_shared_pipeline()
+        print("[INFO] Shared RealSense pipeline stopped.")
+        pipeline = None
+
 import os
 import cv2
 import time
@@ -48,12 +70,12 @@ def create_folder(name):
 def capture_photos(name):
     folder = create_folder(name)
 
-    pipeline = rs.pipeline()
+    pipeline = get_shared_pipeline()
     config = rs.config()
     config.enable_stream(rs.stream.color, 1280, 800, rs.format.bgr8, 30)
     
     print("[INFO] Starting RealSense camera...")
-    pipeline.start(config)
+    # Start handled by get_shared_pipeline()
     time.sleep(2)
 
     photo_count = 0
@@ -86,7 +108,7 @@ def capture_photos(name):
 
             time.sleep(PAUSE_TIME)
     finally:
-        pipeline.stop()
+        stop_shared_pipeline()
         cv2.destroyAllWindows()
         print("[INFO] Done capturing.")
 

@@ -1,3 +1,30 @@
+
+from face_rec_aws import get_shared_pipeline, stop_shared_pipeline
+
+def recognize_face():
+    try:
+        print("[INFO] Starting face recognition...")
+        pipeline = get_shared_pipeline()
+        frames = pipeline.wait_for_frames()
+        color_frame = frames.get_color_frame()
+        if not color_frame:
+            print("[ERROR] No frame captured for recognition.")
+            return False
+
+        color_image = np.asanyarray(color_frame.get_data())
+        locs, names = recognize_faces(color_image)
+        
+        if AUTHORIZED_USER in names:
+            print(f"[SUCCESS] Face recognized: {AUTHORIZED_USER}")
+            return True
+        else:
+            print("[FAILURE] No authorized face recognized.")
+            return False
+
+    except Exception as e:
+        print(f"[ERROR] Face recognition failed: {e}")
+        return False
+
 from smartdoor import setup_gpio, open_lock, close_lock, start_flashlight, stop_flashlight, neo
 from aws_sync import fetch_override_status, upload_log_and_status
 from motionSensor import setup_motion_sensor, get_motion_status
@@ -95,7 +122,7 @@ def main():
                     upload_log_and_status("Motion detected. Starting face recognition...", None)
 
                     try:
-                        stop_streaming()
+                        # stop_streaming() now handled by shared pipeline
                         time.sleep(1)
 
                         if recognize_face():
@@ -113,7 +140,7 @@ def main():
                     except Exception as e:
                         print(f"[WARNING] face_rec() failed: {{e}}. Continuing loop.")
                     finally:
-                        resume_streaming()
+                        # resume_streaming() now handled by shared pipeline
                 else:
                     print("[INFO] No override change. Streaming and monitoring...")
 
