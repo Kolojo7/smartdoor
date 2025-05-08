@@ -3,6 +3,7 @@ import threading
 import time
 import datetime
 import os
+import subprocess
 import cv2
 import numpy as np
 import boto3
@@ -15,6 +16,7 @@ import av
 SIGNALING_SERVER = "http://54.151.64.7:8000"
 DEFAULT_BUCKET = "streambuffer"
 MOTION_BUCKET = "smartdoor-events"
+AUDIO_BUCKET = "audioforstream"
 RECORD_SECONDS = 5
 MOTION_COOLDOWN = 30
 OUTPUT_DIR = "/home/pi/streambuffer"
@@ -27,6 +29,8 @@ stop_event = threading.Event()
 streaming_lock = threading.Lock()
 video_track_instance = None
 last_motion_upload_time = 0
+LAST_PLAYED_FILE = ""
+AUDIO_POLL_INTERVAL = 1  # seconds
 
 # --- Upload helper ---
 def upload_to_s3(filepath, bucket):
@@ -37,6 +41,47 @@ def upload_to_s3(filepath, bucket):
         os.remove(filepath)
     except Exception as e:
         print(f"[ERROR] Failed to upload {filename} to {bucket}: {e}")
+
+# --- Audio polling and playback ---
+def start_audio_polling_thread():
+    def poll_audio():
+        global LAST_PLAYED_FILE
+        print("[AUDIO] Starting audio polling thread...")
+
+        while True:
+            try:
+                response = s3.list_objects_v2(Bucket=AUDIO_BUCKET)
+                for obj in response.get("Contents", []):
+                    key = obj["Key"]
+                    if key == LAST_PLAYED_FILE:
+                        continue
+
+                    if not key.lower().endswith((".mp3", ".wav", ".ogg", ".3gp")):
+                        continue
+
+                    local_path = f"/tmp/{key}"
+                    print(f"[AUDIO] New file found: {key}. Downloading...")
+
+                    s3.download_file(AUDIO_BUCKET, key, local_path)
+
+                    # Play audio
+                    print(f"[AUDIO] Playing: {local_path}")
+                    try:
+                        subprocess.run(["ffplay", "-nodisp", "-autoexit", local_path], check=True)
+                    except subprocess.CalledProcessError as e:
+                        print(f"[AUDIO] Failed to play audio: {e}")
+
+                    # Delete after playing
+                    s3.delete_object(Bucket=AUDIO_BUCKET, Key=key)
+                    print(f"[AUDIO] Deleted {key} from S3 bucket.")
+                    LAST_PLAYED_FILE = key
+
+            except Exception as e:
+                print(f"[AUDIO] Error while polling audio bucket: {e}")
+
+            time.sleep(AUDIO_POLL_INTERVAL)
+
+    threading.Thread(target=poll_audio, daemon=True).start()
 
 # --- RealSense Track ---
 class RealSenseVideoTrack(VideoStreamTrack):
@@ -71,9 +116,19 @@ class RealSenseVideoTrack(VideoStreamTrack):
 
         while self.keep_recording:
             now = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            filename = os.path.join(OUTPUT_DIR, f"{now}.mp4")
-            out = cv2.VideoWriter(filename, cv2.VideoWriter_fourcc(*"mp4v"), 30, (640, 480))
+            base = os.path.join(OUTPUT_DIR, now)
+            video_file = base + ".mp4"
+            audio_file = base + ".wav"
+            stitched_file = base + "_final.mp4"
+
+            out = cv2.VideoWriter(video_file, cv2.VideoWriter_fourcc(*"mp4v"), 30, (640, 480))
             start_time = time.time()
+
+            audio_proc = subprocess.Popen([
+                "arecord", "-D", "hw:2,0", "-f", "S16_LE",
+                "-r", "44100", "-c", "2", "-d", str(RECORD_SECONDS),
+                audio_file
+            ])
 
             while time.time() - start_time < RECORD_SECONDS and self.keep_recording:
                 with streaming_lock:
@@ -85,24 +140,38 @@ class RealSenseVideoTrack(VideoStreamTrack):
                             out.write(img)
 
             out.release()
+            audio_proc.wait()
 
-            if not os.path.exists(filename):
+            if not os.path.exists(video_file) or not os.path.exists(audio_file):
+                print("[WARN] Skipping upload – missing video or audio")
                 continue
 
-            # 🧠 Decide which bucket to use
-            bucket = DEFAULT_BUCKET
+            try:
+                subprocess.run([
+                    "ffmpeg", "-y", "-i", video_file, "-i", audio_file,
+                    "-c:v", "copy", "-c:a", "aac", "-strict", "experimental", stitched_file
+                ], check=True)
+            except subprocess.CalledProcessError as e:
+                print(f"[ERROR] ffmpeg stitching failed: {e}")
+                continue
+
+            upload_bucket = DEFAULT_BUCKET
             if self.motion_check_fn:
                 try:
                     is_motion = self.motion_check_fn()
                     now_time = time.time()
                     if is_motion and now_time - last_motion_upload_time >= MOTION_COOLDOWN:
-                        bucket = MOTION_BUCKET
                         last_motion_upload_time = now_time
-                        print(f"[MOTION DETECTED] Uploading chunk to {bucket}")
+                        upload_bucket = MOTION_BUCKET
+                        print(f"[MOTION DETECTED] Uploading stitched clip to {upload_bucket}")
                 except Exception as e:
                     print(f"[WARN] Motion check failed: {e}")
 
-            upload_to_s3(filename, bucket)
+            upload_to_s3(stitched_file, upload_bucket)
+
+            for f in [video_file, audio_file]:
+                if os.path.exists(f):
+                    os.remove(f)
 
     async def recv(self):
         pts, time_base = await self.next_timestamp()
@@ -205,4 +274,7 @@ def stop_streaming():
     print("[awsStream] Stopping stream.")
     stop_event.set()
     streaming_event.clear()
+
+# --- Startup tasks ---
+start_audio_polling_thread()
 
